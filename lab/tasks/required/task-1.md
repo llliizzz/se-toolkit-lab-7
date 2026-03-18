@@ -59,7 +59,6 @@ Follow the [setup instructions](../setup-simple.md#17-set-up-llm-access-qwen-cod
 
 | Model              | Tool calling | Notes                                        |
 | ------------------ | ------------ | -------------------------------------------- |
-| `qwen3-coder-plus` | Strong       | Recommended, default in `.env.agent.example` |
 | `coder-model`      | Strong       | Qwen 3.5 Plus                                |
 
 <details><summary><b>Alternative: OpenRouter (click to open)</b></summary>
