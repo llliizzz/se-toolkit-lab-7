@@ -133,3 +133,44 @@ async def test_router_falls_back_to_sync_summary():
 
     assert "sync" in response.lower()
     assert "14 items" in response
+
+
+async def test_router_recovers_learner_count_when_llm_skips_tools():
+    router = IntentRouter(
+        backend=DummyBackend(),
+        llm=ScriptedLLM(
+            [{"role": "assistant", "content": "I can help with LMS data."}]
+        ),
+    )
+
+    response = await router.route("how many students are enrolled?")
+
+    assert "3 students enrolled" in response
+
+
+async def test_router_recovers_group_summary_when_llm_skips_tools():
+    router = IntentRouter(
+        backend=DummyBackend(),
+        llm=ScriptedLLM(
+            [{"role": "assistant", "content": "I can help with LMS data."}]
+        ),
+    )
+
+    response = await router.route("which group is doing best in lab 3?")
+
+    assert "Group B" in response
+    assert "88.0%" in response
+
+
+async def test_router_recovers_sync_summary_when_llm_skips_tools():
+    router = IntentRouter(
+        backend=DummyBackend(),
+        llm=ScriptedLLM(
+            [{"role": "assistant", "content": "I can help with LMS data."}]
+        ),
+    )
+
+    response = await router.route("sync the data")
+
+    assert "sync" in response.lower()
+    assert "14 items" in response

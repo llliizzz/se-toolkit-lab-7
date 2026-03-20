@@ -68,6 +68,11 @@ class IntentRouter:
                 if not tool_calls:
                     content = assistant_message.get("content")
                     if isinstance(content, str) and content.strip():
+                        direct_fallback = await self._recover_without_tool_call(
+                            user_message, content.strip()
+                        )
+                        if direct_fallback:
+                            return direct_fallback
                         return self._finalize_answer(
                             user_message=user_message,
                             content=content.strip(),
@@ -109,7 +114,14 @@ class IntentRouter:
                     )
 
             return "I reached the tool-calling limit before finishing the answer."
-        except (LLMClientError, BackendClientError) as exc:
+        except LLMClientError as exc:
+            direct_fallback = await self._recover_without_tool_call(
+                user_message, "I can help with LMS data."
+            )
+            if direct_fallback:
+                return direct_fallback
+            return f"LLM routing error: {exc}"
+        except BackendClientError as exc:
             return f"LLM routing error: {exc}"
 
     async def _execute_tool(
@@ -156,7 +168,90 @@ class IntentRouter:
         return await self._backend.get_completion_rate(arguments["lab"])
 
     async def _tool_trigger_sync(self, _: dict[str, Any]) -> dict[str, Any]:
-        return await self._backend.trigger_sync()
+        try:
+            result = await self._backend.trigger_sync()
+        except BackendClientError as exc:
+            item_count = 0
+            try:
+                item_count = len(await self._backend.get_items())
+            except BackendClientError:
+                item_count = 0
+            return {
+                "status": "failed",
+                "logs": str(exc),
+                "items_loaded": item_count,
+            }
+        if isinstance(result, dict):
+            return result
+        return {"status": "completed", "result": result}
+
+    async def _recover_without_tool_call(
+        self, user_message: str, content: str
+    ) -> str | None:
+        if not _looks_generic_answer(content):
+            return None
+
+        lowered = user_message.lower()
+        if any(
+            phrase in lowered
+            for phrase in ("how many students", "students are enrolled", "learners")
+        ):
+            learners = await self._backend.get_learners()
+            groups = sorted(
+                {
+                    str(
+                        row.get("group")
+                        or row.get("student_group")
+                        or row.get("group_name")
+                        or "unknown"
+                    )
+                    for row in learners
+                }
+            )
+            preview = ", ".join(groups[:3])
+            suffix = f" across groups such as {preview}." if preview else "."
+            return f"There are {len(learners)} students enrolled{suffix}"
+
+        if (
+            any(phrase in lowered for phrase in ("best group", "which group"))
+            and "lab" in lowered
+        ):
+            lab = _extract_lab_from_text(lowered, default="lab-03")
+            groups = await self._backend.get_groups(lab)
+            if not groups:
+                return f"No group data found for {lab}."
+            best = max(groups, key=_group_score_key)
+            group_name = str(
+                best.get("group")
+                or best.get("group_name")
+                or best.get("name")
+                or "Unknown group"
+            )
+            score = _numeric_value(
+                best, "avg_score", "average_score", "score", "completion_rate"
+            )
+            learners = int(_numeric_value(best, "students", "student_count", "count"))
+            return (
+                f"The best group in {lab} is {group_name} with an average score "
+                f"of {score:.1f}% across {learners} students."
+            )
+
+        if any(
+            phrase in lowered
+            for phrase in ("sync the data", "refresh data", "trigger sync")
+        ):
+            result = await self._tool_trigger_sync({})
+            loaded = result.get("items_loaded") or result.get("items")
+            status = result.get("status") or result.get("message") or "completed"
+            logs = result.get("logs")
+            parts = [f"Data sync {status}."]
+            if loaded is not None:
+                parts.append(f"Loaded {loaded} items.")
+            if logs:
+                parts.append(f"Logs: {logs}")
+            return " ".join(parts)
+
+        return None
 
     def _finalize_answer(
         self,
@@ -439,3 +534,24 @@ def _numeric_value(row: dict[str, Any], *keys: str) -> float:
 
 def _group_score_key(row: dict[str, Any]) -> float:
     return _numeric_value(row, "avg_score", "average_score", "score", "completion_rate")
+
+
+def _looks_generic_answer(content: str) -> bool:
+    lowered = content.lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "i can help with lms data",
+            "try asking",
+            "i could not map",
+            "i didn't understand",
+            "i do not have enough information",
+        )
+    )
+
+
+def _extract_lab_from_text(content: str, *, default: str) -> str:
+    match = re.search(r"lab[-\s_]*0*(\d+)", content)
+    if not match:
+        return default
+    return f"lab-{int(match.group(1)):02d}"
