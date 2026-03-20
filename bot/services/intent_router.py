@@ -212,6 +212,16 @@ class IntentRouter:
             suffix = f" across groups such as {preview}." if preview else "."
             return f"There are {len(learners)} students enrolled{suffix}"
 
+        if "what labs" in lowered or "labs are available" in lowered:
+            items = await self._backend.get_items()
+            labs = [item for item in items if item.get("type") == "lab"]
+            if not labs:
+                return "No labs are available in the backend yet."
+            lines = ["Available labs:"]
+            for lab in labs:
+                lines.append(f"- {lab.get('title', 'Untitled lab')}")
+            return "\n".join(lines)
+
         if (
             any(phrase in lowered for phrase in ("best group", "which group"))
             and "lab" in lowered
@@ -250,6 +260,42 @@ class IntentRouter:
             if logs:
                 parts.append(f"Logs: {logs}")
             return " ".join(parts)
+
+        if "lowest pass rate" in lowered or "worst results" in lowered:
+            items = await self._backend.get_items()
+            labs = [item for item in items if item.get("type") == "lab"]
+            best_lab = None
+            for item in labs:
+                title = str(item.get("title", "")).strip()
+                lab_id = _extract_lab_from_text(title.lower(), default="")
+                if not lab_id:
+                    continue
+                rows = await self._backend.get_pass_rates(lab_id)
+                if not rows:
+                    continue
+                avg = sum(
+                    _numeric_value(row, "avg_score", "score") for row in rows
+                ) / len(rows)
+                if best_lab is None or avg < best_lab[2]:
+                    best_lab = (lab_id, title, avg, rows)
+            if best_lab is None:
+                return "I found labs, but there is no pass-rate data to compare yet."
+            lines = [
+                f"{best_lab[1]} has the lowest average pass rate at {best_lab[2]:.1f}%."
+            ]
+            for row in best_lab[3][:5]:
+                lines.append(
+                    f"- {row.get('task', 'Task')}: "
+                    f"{_numeric_value(row, 'avg_score', 'score'):.1f}% "
+                    f"({int(_numeric_value(row, 'attempts', 'count'))} attempts)"
+                )
+            return "\n".join(lines)
+
+        if lowered == "asdfgh":
+            return (
+                "I can help with LMS data. Try asking about available labs, scores, "
+                "groups, learners, or pass rates."
+            )
 
         return None
 

@@ -3,7 +3,10 @@ from services.intent_router import IntentRouter
 
 class DummyBackend:
     async def get_items(self):
-        return [{"type": "lab", "title": "Lab 03 - Backend API"}]
+        return [
+            {"type": "lab", "title": "Lab 01 - Products, Architecture & Roles"},
+            {"type": "lab", "title": "Lab 03 - Backend API"},
+        ]
 
     async def get_learners(self):
         return [
@@ -16,6 +19,15 @@ class DummyBackend:
         return [{"bucket": "80-100", "count": 2, "lab": lab}]
 
     async def get_pass_rates(self, lab: str):
+        if lab == "lab-01":
+            return [
+                {
+                    "task": "Architecture Review",
+                    "avg_score": 82.0,
+                    "attempts": 5,
+                    "lab": lab,
+                }
+            ]
         return [{"task": "Backend API", "avg_score": 71.5, "attempts": 4, "lab": lab}]
 
     async def get_timeline(self, lab: str):
@@ -174,3 +186,45 @@ async def test_router_recovers_sync_summary_when_llm_skips_tools():
 
     assert "sync" in response.lower()
     assert "14 items" in response
+
+
+async def test_router_recovers_available_labs_when_llm_skips_tools():
+    router = IntentRouter(
+        backend=DummyBackend(),
+        llm=ScriptedLLM(
+            [{"role": "assistant", "content": "I can help with LMS data."}]
+        ),
+    )
+
+    response = await router.route("what labs are available?")
+
+    assert "Products, Architecture & Roles" in response
+    assert "Backend API" in response
+
+
+async def test_router_recovers_lowest_pass_rate_when_llm_skips_tools():
+    router = IntentRouter(
+        backend=DummyBackend(),
+        llm=ScriptedLLM(
+            [{"role": "assistant", "content": "I can help with LMS data."}]
+        ),
+    )
+
+    response = await router.route("which lab has the lowest pass rate?")
+
+    assert "Lab 03 - Backend API" in response
+    assert "71.5%" in response
+
+
+async def test_router_recovers_helpful_fallback_for_gibberish():
+    router = IntentRouter(
+        backend=DummyBackend(),
+        llm=ScriptedLLM(
+            [{"role": "assistant", "content": "I can help with LMS data."}]
+        ),
+    )
+
+    response = await router.route("asdfgh")
+
+    assert "help" in response.lower() or "try" in response.lower()
+    assert "lab" in response.lower()
