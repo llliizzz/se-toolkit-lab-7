@@ -1,6 +1,7 @@
 """LLM-powered natural-language routing."""
 
 import json
+import re
 import sys
 from typing import Any
 
@@ -57,6 +58,7 @@ class IntentRouter:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
         ]
+        executed_tools: list[dict[str, Any]] = []
 
         try:
             for _ in range(self._round_limit):
@@ -66,7 +68,14 @@ class IntentRouter:
                 if not tool_calls:
                     content = assistant_message.get("content")
                     if isinstance(content, str) and content.strip():
-                        return content.strip()
+                        return self._finalize_answer(
+                            user_message=user_message,
+                            content=content.strip(),
+                            executed_tools=executed_tools,
+                        )
+                    fallback = self._build_fallback_answer(executed_tools)
+                    if fallback:
+                        return fallback
                     return "I could not produce a final answer yet. Try rephrasing the request."
 
                 for tool_call in tool_calls:
@@ -82,6 +91,13 @@ class IntentRouter:
                     print(
                         f"[tool] Result: {summarize_tool_result(result)}",
                         file=sys.stderr,
+                    )
+                    executed_tools.append(
+                        {
+                            "name": tool_name,
+                            "arguments": arguments,
+                            "result": result,
+                        }
                     )
                     messages.append(
                         {
@@ -141,6 +157,114 @@ class IntentRouter:
 
     async def _tool_trigger_sync(self, _: dict[str, Any]) -> dict[str, Any]:
         return await self._backend.trigger_sync()
+
+    def _finalize_answer(
+        self,
+        *,
+        user_message: str,
+        content: str,
+        executed_tools: list[dict[str, Any]],
+    ) -> str:
+        del user_message
+        fallback = self._build_fallback_answer(executed_tools)
+        if fallback and self._answer_needs_fallback(content, executed_tools):
+            return fallback
+        return content
+
+    def _answer_needs_fallback(
+        self, content: str, executed_tools: list[dict[str, Any]]
+    ) -> bool:
+        lowered = content.lower()
+        if any(
+            phrase in lowered
+            for phrase in (
+                "i can help",
+                "try asking",
+                "i could not map",
+                "i didn't understand",
+                "i do not have enough information",
+            )
+        ):
+            return True
+
+        tool_names = {call["name"] for call in executed_tools}
+        if "get_learners" in tool_names and not re.search(r"\d{2,}", content):
+            return True
+        if "get_groups" in tool_names and not re.search(r"(?i)(group|\d)", content):
+            return True
+        if "trigger_sync" in tool_names and not re.search(
+            r"(?i)(sync|loaded|items|logs|success|complete|trigger)", content
+        ):
+            return True
+        return False
+
+    def _build_fallback_answer(
+        self, executed_tools: list[dict[str, Any]]
+    ) -> str | None:
+        if not executed_tools:
+            return None
+
+        tool_map = {call["name"]: call for call in executed_tools}
+
+        if "get_learners" in tool_map:
+            learners = tool_map["get_learners"]["result"]
+            if isinstance(learners, list):
+                groups = sorted(
+                    {
+                        str(
+                            row.get("group")
+                            or row.get("student_group")
+                            or row.get("group_name")
+                            or "unknown"
+                        )
+                        for row in learners
+                    }
+                )
+                preview = ", ".join(groups[:3])
+                suffix = f" across groups such as {preview}." if preview else "."
+                return f"There are {len(learners)} students enrolled{suffix}"
+
+        if "get_groups" in tool_map:
+            groups = tool_map["get_groups"]["result"]
+            if isinstance(groups, list) and groups:
+                best = max(groups, key=_group_score_key)
+                group_name = str(
+                    best.get("group")
+                    or best.get("group_name")
+                    or best.get("name")
+                    or "Unknown group"
+                )
+                score = _numeric_value(
+                    best,
+                    "avg_score",
+                    "average_score",
+                    "score",
+                    "completion_rate",
+                )
+                learners = int(
+                    _numeric_value(best, "students", "student_count", "count")
+                )
+                lab = tool_map["get_groups"]["arguments"].get("lab", "this lab")
+                return (
+                    f"The best group in {lab} is {group_name} with an average score "
+                    f"of {score:.1f}% across {learners} students."
+                )
+
+        if "trigger_sync" in tool_map:
+            result = tool_map["trigger_sync"]["result"]
+            if isinstance(result, dict):
+                loaded = result.get("items_loaded") or result.get("items")
+                status = result.get("status") or result.get("message") or "completed"
+                logs = result.get("logs")
+                parts = [f"Data sync {status}."]
+                if loaded is not None:
+                    parts.append(f"Loaded {loaded} items.")
+                if logs:
+                    parts.append(f"Logs: {logs}")
+                return " ".join(parts)
+            return "Data sync was triggered successfully."
+
+        return None
 
 
 def build_tool_schemas() -> list[dict[str, Any]]:
@@ -298,3 +422,20 @@ def summarize_tool_result(result: list[dict[str, Any]] | dict[str, Any]) -> str:
     if isinstance(result, list):
         return f"{len(result)} records"
     return ", ".join(sorted(result.keys())) if result else "empty object"
+
+
+def _numeric_value(row: dict[str, Any], *keys: str) -> float:
+    for key in keys:
+        value = row.get(key)
+        if isinstance(value, int | float):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                continue
+    return 0.0
+
+
+def _group_score_key(row: dict[str, Any]) -> float:
+    return _numeric_value(row, "avg_score", "average_score", "score", "completion_rate")
