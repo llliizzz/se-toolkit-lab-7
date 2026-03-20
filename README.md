@@ -157,3 +157,10 @@ Verify:
 - `curl -sf http://localhost:42002/docs`
 - `docker compose --env-file .env.docker.secret ps bot`
 - send `/start`, `/health`, and a plain-language question in Telegram
+
+## Troubleshooting
+
+- `LLM error: HTTP 401` usually means the Qwen proxy token expired. Restart it with `cd ~/qwen-code-oai-proxy && docker compose restart`.
+- If the bot container cannot reach the backend, make sure `BOT_LMS_API_URL` points to `http://backend:8000`, not `localhost`.
+- If natural-language queries fail only inside Docker, make sure `LLM_API_BASE_URL` uses `http://host.docker.internal:42005/v1`.
+- If Telegram polling times out, first verify the VM can reach `https://api.telegram.org`, then re-check `BOT_TOKEN` in `.env.bot.secret` and `.env.docker.secret`.

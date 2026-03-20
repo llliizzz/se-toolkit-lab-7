@@ -31,6 +31,23 @@ async def test_help_lists_commands():
     assert "/scores <lab>" in response
 
 
+async def test_start_returns_welcome_message():
+    handlers = CommandHandlers(backend=DummyBackend(), intent_router=DummyRouter())
+
+    response = await handlers.handle_text("/start")
+
+    assert "Welcome to LMS Insight Bot" in response
+
+
+async def test_labs_returns_backend_data():
+    handlers = CommandHandlers(backend=DummyBackend(), intent_router=DummyRouter())
+
+    response = await handlers.handle_text("/labs")
+
+    assert "Available labs:" in response
+    assert "lab-01 - Lab 01 - Intro" in response
+
+
 async def test_scores_requires_argument():
     handlers = CommandHandlers(backend=DummyBackend(), intent_router=DummyRouter())
 
